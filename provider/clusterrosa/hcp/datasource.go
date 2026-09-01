@@ -28,6 +28,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	sdk "github.com/openshift-online/ocm-sdk-go"
+	amsv1 "github.com/openshift-online/ocm-sdk-go/accountsmgmt/v1"
 	cmv1 "github.com/openshift-online/ocm-sdk-go/clustersmgmt/v1"
 
 	rosa "github.com/terraform-redhat/terraform-provider-rhcs/provider/clusterrosa/common"
@@ -40,9 +41,10 @@ import (
 )
 
 type ClusterRosaHcpDatasource struct {
-	clusterCollection *cmv1.ClustersClient
-	versionCollection *cmv1.VersionsClient
-	clusterWait       common.ClusterWait
+	clusterCollection   *cmv1.ClustersClient
+	versionCollection   *cmv1.VersionsClient
+	clusterWait         common.ClusterWait
+	subscriptionsClient *amsv1.SubscriptionsClient
 }
 
 var _ datasource.DataSource = &ClusterRosaHcpDatasource{}
@@ -380,7 +382,8 @@ func (r *ClusterRosaHcpDatasource) Schema(ctx context.Context, req datasource.Sc
 				Description: "Enable external authentication providers on the cluster.",
 				Computed:    true,
 			},
-			"delete_protection": rosa.DeleteProtectionDatasourceSchema(),
+			"delete_protection":     rosa.DeleteProtectionDatasourceSchema(),
+			"notification_contacts": rosa.NotificationContactsDatasourceSchema(),
 		},
 	}
 }
@@ -403,6 +406,7 @@ func (r *ClusterRosaHcpDatasource) Configure(ctx context.Context, req datasource
 	r.clusterCollection = connection.ClustersMgmt().V1().Clusters()
 	r.versionCollection = connection.ClustersMgmt().V1().Versions()
 	r.clusterWait = common.NewClusterWait(r.clusterCollection, connection)
+	r.subscriptionsClient = connection.AccountsMgmt().V1().Subscriptions()
 }
 
 func (r *ClusterRosaHcpDatasource) Read(ctx context.Context, request datasource.ReadRequest,
@@ -510,6 +514,12 @@ func (r *ClusterRosaHcpDatasource) Read(ctx context.Context, request datasource.
 		return
 	}
 	state.DeleteProtection = dpVal
+
+	ncVal, ncDiags := rosa.ResolveNotificationContacts(ctx, r.subscriptionsClient, object)
+	response.Diagnostics.Append(ncDiags...)
+	if !ncVal.IsNull() {
+		state.NotificationContacts = ncVal
+	}
 
 	diags = response.State.Set(ctx, state)
 	response.Diagnostics.Append(diags...)

@@ -84,4 +84,6 @@ type ClusterRosaClassicState struct {
 	MaxClusterWaitTimeoutInMinutes types.Int64 `tfsdk:"max_cluster_wait_timeout_in_minutes"`
 
 	DeleteProtection types.Bool `tfsdk:"delete_protection"`
+
+	NotificationContacts types.List `tfsdk:"notification_contacts"`
 }

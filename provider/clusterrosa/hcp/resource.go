@@ -507,7 +507,8 @@ func (r *ClusterRosaHcpResource) Schema(ctx context.Context, req resource.Schema
 					boolplanmodifier.UseStateForUnknown(),
 				},
 			},
-			"delete_protection": rosa.DeleteProtectionResourceSchema(),
+			"delete_protection":     rosa.DeleteProtectionResourceSchema(),
+			"notification_contacts": rosa.NotificationContactsResourceSchema(),
 			"log_forwarders_at_cluster_creation": schema.ListNestedAttribute{
 				Description: "List of log forwarders to configure during cluster creation (Day 1 only). " +
 					"This field is immutable after cluster creation and cannot be modified. " +
@@ -607,6 +608,7 @@ func (r *ClusterRosaHcpResource) Configure(ctx context.Context, req resource.Con
 	r.ClusterCollection = connection.ClustersMgmt().V1().Clusters()
 	r.VersionCollection = connection.ClustersMgmt().V1().Versions()
 	r.ClusterWait = common.NewClusterWait(r.ClusterCollection, connection)
+	r.SubscriptionsClient = connection.AccountsMgmt().V1().Subscriptions()
 }
 
 const (
@@ -1251,6 +1253,42 @@ func (r *ClusterRosaHcpResource) Create(ctx context.Context, request resource.Cr
 		state.DeleteProtection = dpVal
 	}
 
+	// Set notification contacts (Day-2 operation, requires subscription to exist)
+	if !state.NotificationContacts.IsNull() && !state.NotificationContacts.IsUnknown() {
+		subID, hasSubID := rosa.GetSubscriptionID(object)
+		if hasSubID {
+			var usernames []string
+			diags = state.NotificationContacts.ElementsAs(ctx, &usernames, false)
+			response.Diagnostics.Append(diags...)
+			if response.Diagnostics.HasError() {
+				return
+			}
+			err = rosa.UpdateNotificationContacts(ctx, r.SubscriptionsClient, subID, usernames)
+			if err != nil {
+				response.Diagnostics.AddError(
+					"Can't set notification contacts",
+					fmt.Sprintf(
+						"Cluster '%s' was created but notification contacts could not be set: %v",
+						state.ID.ValueString(), err,
+					),
+				)
+				diags = response.State.Set(ctx, state)
+				response.Diagnostics.Append(diags...)
+				return
+			}
+		} else {
+			response.Diagnostics.AddWarning(
+				"Can't set notification contacts",
+				"Cluster subscription ID is not available yet. "+
+					"Notification contacts will be set on the next terraform apply.",
+			)
+		}
+	} else {
+		ncVal, ncDiags := rosa.ResolveNotificationContacts(ctx, r.SubscriptionsClient, object)
+		response.Diagnostics.Append(ncDiags...)
+		state.NotificationContacts = ncVal
+	}
+
 	diags = response.State.Set(ctx, state)
 	response.Diagnostics.Append(diags...)
 }
@@ -1335,6 +1373,12 @@ func (r *ClusterRosaHcpResource) Read(ctx context.Context, request resource.Read
 		state.DeleteProtection = priorDeleteProtection
 	} else {
 		state.DeleteProtection = dpVal
+	}
+
+	ncVal, ncDiags := rosa.ResolveNotificationContacts(ctx, r.SubscriptionsClient, object)
+	response.Diagnostics.Append(ncDiags...)
+	if !ncVal.IsNull() {
+		state.NotificationContacts = ncVal
 	}
 
 	diags = response.State.Set(ctx, state)
@@ -1559,6 +1603,8 @@ func (r *ClusterRosaHcpResource) Update(ctx context.Context, request resource.Up
 	_, shouldPatchDeleteProtection := common.ShouldPatchBool(state.DeleteProtection, plan.DeleteProtection)
 	desiredDeleteProtection := plan.DeleteProtection
 
+	_, shouldPatchNotificationContacts := common.ShouldPatchList(state.NotificationContacts, plan.NotificationContacts)
+
 	clusterBuilder := cmv1.NewCluster()
 
 	// Handle channel change
@@ -1780,6 +1826,34 @@ func (r *ClusterRosaHcpResource) Update(ctx context.Context, request resource.Up
 			plan.DeleteProtection = priorDeleteProtection
 		} else {
 			plan.DeleteProtection = dpVal
+		}
+	}
+
+	if shouldPatchNotificationContacts {
+		subID, hasSubID := rosa.GetSubscriptionID(object)
+		if hasSubID {
+			var usernames []string
+			diags = plan.NotificationContacts.ElementsAs(ctx, &usernames, false)
+			response.Diagnostics.Append(diags...)
+			if response.Diagnostics.HasError() {
+				return
+			}
+			err = rosa.UpdateNotificationContacts(ctx, r.SubscriptionsClient, subID, usernames)
+			if err != nil {
+				response.Diagnostics.AddError(
+					"Can't update notification contacts",
+					fmt.Sprintf(
+						"Can't update notification contacts for cluster '%s': %v",
+						plan.ID.ValueString(), err,
+					),
+				)
+			}
+		}
+	} else {
+		ncVal, ncDiags := rosa.ResolveNotificationContacts(ctx, r.SubscriptionsClient, object)
+		response.Diagnostics.Append(ncDiags...)
+		if !ncVal.IsNull() {
+			plan.NotificationContacts = ncVal
 		}
 	}
 
